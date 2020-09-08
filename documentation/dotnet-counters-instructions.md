@@ -180,3 +180,41 @@ dotnet tool install --global dotnet-counters
         A space separated list of counters. Counters can be specified provider_name[:counter_name]. If the
         provider_name is used without a qualifying counter_name then all counters will be shown. To discover
         provider and counter names, use the list command.
+
+## Configuration with .netconfig
+
+In order to avoid repeating lengthy command line arguments every time the tool is used, you can leverage the built-in support for [.netconfig](https://dotnetconfig.org). This allows all tool arguments to be 
+saved in *.netconfig* files (which support [hierarchical configuration](https://dotnetconfig.org/index.html#what) too) so they can be reused across tool runs.
+
+All settings must be placed under the `counters` section, for example:
+
+```gitconfig
+[counters]
+    refresh-interval = 5
+    format = json
+```
+
+The *counter_list* argument, supported in both `monitor` and `collect` commands, can be used as unqualified provider names, specified directly in the `counters` section with *include*:
+
+```gitconfig
+[counters]
+    include = System.Runtime
+    include = Microsoft.AspNetCore.Hosting
+```
+
+Or they can be qualified by including the relevant counter names in their own subsections:
+
+```gitconfig
+[counters]
+    include = Microsoft.AspNetCore.Hosting
+
+[counters "System.Runtime"]
+    cpu-usage
+    working-set
+    assembly-count
+    exception-count
+```
+
+The above configuration will include all counters (i.e. unqualified) from the *Microsoft.AspNetCore.Hosting* provider, and only the specified counters for the *System.Runtime* provider.
+
+The configured values are used as fallback default values when the corresponding argument *isn't* provided via the command line.

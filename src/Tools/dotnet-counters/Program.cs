@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.Diagnostics.NETCore.Client;
+using DotNetConfig;
 using Microsoft.Internal.Common.Commands;
 using Microsoft.Tools.Common;
 using System;
@@ -23,6 +23,8 @@ namespace Microsoft.Diagnostics.Tools.Counters
     internal class Program
     {
         delegate Task<int> ExportDelegate(CancellationToken ct, List<string> counter_list, IConsole console, int processId, int refreshInterval, CountersExportFormat format, string output, string processName);
+
+        private static Config Configuration { get; } = Config.Build();
 
         private static Command MonitorCommand() =>
             new Command(
@@ -51,7 +53,7 @@ namespace Microsoft.Diagnostics.Tools.Counters
                 aliases: new[] { "-n", "--name" },
                 description: "The name of the process that will be monitored.")
             {
-                Argument = new Argument<string>(name: "name")
+                Argument = new Argument<string>(name: "name", getDefaultValue: () => Configuration.GetString("counters", "name"))
             };
 
         private static Option ProcessIdOption() =>
@@ -67,7 +69,8 @@ namespace Microsoft.Diagnostics.Tools.Counters
                 alias: "--refresh-interval",
                 description: "The number of seconds to delay between updating the displayed counters.")
             {
-                Argument = new Argument<int>(name: "refresh-interval", getDefaultValue: () => 1)
+                Argument = new Argument<int>(name: "refresh-interval", getDefaultValue: () =>
+                    Configuration.TryGetNumber("counters", "refresh-interval", out var interval) ? (int)interval : 1)
             };
 
         private static Option ExportFormatOption() =>
@@ -75,19 +78,24 @@ namespace Microsoft.Diagnostics.Tools.Counters
                 alias: "--format",
                 description: "The format of exported counter data.")
             {
-                Argument = new Argument<CountersExportFormat>(name: "format", getDefaultValue: () => CountersExportFormat.csv)
+                Argument = new Argument<CountersExportFormat>(name: "format", getDefaultValue: () =>
+                    Configuration.TryGetString("counters", "format", out var format) ?
+                    Enum.Parse<CountersExportFormat>(format) :
+                    CountersExportFormat.csv)
             };
 
         private static Option ExportFileNameOption() =>
             new Option(
                 aliases: new[] { "-o", "--output" },
-                description: "The output file name.") 
+                description: "The output file name.")
             {
-                Argument = new Argument<string>(name: "output", getDefaultValue: () => "counter")
+                Argument = new Argument<string>(name: "output", getDefaultValue: () =>
+                   Configuration.GetString("counters", "output") ?? "counter")
             };
 
         private static Argument CounterList() =>
-            new Argument<List<string>>(name: "counter_list", getDefaultValue: () => new List<string>())
+            new Argument<List<string>>(name: "counter_list", getDefaultValue: () =>
+            new List<string>(GetConfiguredCounters()))
             {
                 Description = @"A space separated list of counters. Counters can be specified provider_name[:counter_name]. If the provider_name is used without a qualifying counter_name then all counters will be shown. To discover provider and counter names, use the list command.",
                 Arity = ArgumentArity.ZeroOrMore
@@ -105,12 +113,51 @@ namespace Microsoft.Diagnostics.Tools.Counters
         private static Option RuntimeVersionOption() =>
             new Option(
                 aliases: new[] { "-r", "--runtime-version" },
-                description: "Version of runtime. Supported runtime version: 3.0, 3.1, 5.0") 
+                description: "Version of runtime. Supported runtime version: 3.0, 3.1, 5.0")
             {
-                Argument = new Argument<string>(name: "runtimeVersion", getDefaultValue: () => "3.1")
+                Argument = new Argument<string>(name: "runtimeVersion", getDefaultValue: () =>
+                    Configuration.GetString("counters", "runtimeVersion") ?? "3.1")
             };
 
         private static readonly string[] s_SupportedRuntimeVersions = new[] { "3.0", "3.1", "5.0" };
+
+        private static IEnumerable<string> GetConfiguredCounters()
+        {
+            HashSet<string> counters = null;
+
+            // Unqualified counters can be added directly as 'include' entries on the main 'counters' section, such as:
+            // [counters]
+            //    include = System.Runtime
+            //    include = Microsoft.AspNetCore.Hosting
+
+            foreach (var counter in Configuration.GetAll("counters", "include")
+                .Select(entry => entry.RawValue)
+                .Where(value => !string.IsNullOrEmpty(value)))
+            {
+                (counters ??= new HashSet<string>()).Add(counter);
+            }
+
+            // Each counter gets a section and each metric gets its own variable. This makes it easy to 
+            // comment out one or several in a single edit operation in a text editor by just commenting a block
+            // Example:
+            // [counters "System.Runtime"]
+            //    cpu-usage
+            //    working-set
+            //    assembly-count
+            //    exception-count
+
+            foreach (var counter in Configuration.GetRegex("counters")
+                .Where(x => x.Section == "counters" && x.Subsection != null)
+                .GroupBy(x => x.Subsection))
+            {
+                var qualified = counter.Key + "[" + string.Join(',', counter.Select(e => e.Variable)) + "]";
+                // Replace potentially unqualified provider with the qualified one we just built.
+                counters.Remove(counter.Key);
+                counters.Add(qualified);
+            }
+
+            return counters;
+        }
 
         public static int List(IConsole console, string runtimeVersion)
         {
